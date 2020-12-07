@@ -1,0 +1,58 @@
+#! /usr/local/bin/bb
+
+(require '[babashka.pods :as pods])
+(pods/load-pod "pod-babashka-filewatcher")
+
+(require '[pod.babashka.filewatcher :as fw])
+
+(defn read-forms [string]
+  (read-string (str "[" string "]")))
+
+(defn transform-arrows [in-str]
+  (str/join "\n"
+         (doall
+          (for [line (str/split-lines in-str)]
+            (if (re-matches #"^\>.*" line)
+              (let [[_ new-line] (re-matches #"^\>(.*)" line)
+                    nl (str/trim new-line)
+                    ;;_ (println "nl" nl)
+                    println-stmt (str "(println " (pr-str nl)
+                                      " \" => \" (pr-str " nl "))")]
+                ;;(println println-stmt)
+                println-stmt)
+              line)))))
+
+(defn eval-each-and-return-last [forms]
+  (let [out (atom nil)]
+    (doseq [f forms]
+      ;;(println "form to eval:" (pr-str f))
+      (reset! out (eval f)))
+    @out))
+
+(defn handle! [file-path]
+  (println)
+  (println "I found changes in " file-path ". Rerunning now...")
+  (println)
+  (println
+   "Returning: "
+   (-> file-path
+       slurp
+       transform-arrows
+       read-forms
+       eval-each-and-return-last
+       pr-str)))
+
+(defn watch!
+  "will wait and watch file-name, running handle! each time it is changed." 
+  []
+
+  (fw/watch
+   (first *command-line-args*)
+   (fn [{:keys [path type] :as event}]
+     (when (= type :write)
+       (handle! path)))
+   {:delay-ms 50})
+  @(promise))
+
+;;(handle! "examples/one.clj")
+(watch!)
