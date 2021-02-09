@@ -2,57 +2,65 @@
 
 (require '[babashka.pods :as pods])
 (pods/load-pod "pod-babashka-filewatcher")
-
 (require '[pod.babashka.filewatcher :as fw])
 
+(def fold ";;--;;")
+
 (defn read-forms [string]
-  (read-string (str "[" string "]")))
+  (let [string-before-fold (str/replace string (re-pattern (str "(?ms)" fold ".*")) "")]
+    (read-string (str "[" string-before-fold
+                      ;; newline incase string-before-fold ends with a ;
+                      "\n]"))))
 
-(defn transform-arrows [in-str]
-  (str/join "\n"
-         (doall
-          (for [line (str/split-lines in-str)]
-            (if (re-matches #"^\>.*" line)
-              (let [[_ new-line] (re-matches #"^\>(.*)" line)
-                    nl (str/trim new-line)
-                    ;;_ (println "nl" nl)
-                    println-stmt (str "(println " (pr-str nl)
-                                      " \" => \" (pr-str " nl "))")]
-                ;;(println println-stmt)
-                println-stmt)
-              line)))))
+(defn print-arrow [form]
+  (let [o (eval form)]
+    (println (pr-str form) "\n;=> " (pr-str o))
+    o))
 
-(defn eval-each-and-return-last [forms]
-  (let [out (atom nil)]
-    (doseq [f forms]
-      ;;(println "form to eval:" (pr-str f))
-      (reset! out (eval f)))
-    @out))
+(defn eval-with-arrow-handling
+  "arrows on top level turned into println of form and output"
+  [forms]
+  ;; (println "forms:\n" (pr-str forms))
+  (last
+   (mapv (fn [[arrow? form]]
+           (if (= arrow? '>)
+             (print-arrow form)
+             (eval form)))
+         (partition 2 1 (concat [nil] (vec forms))))))
 
 (defn handle! [file-path]
-  (println)
-  (println "I found changes in " file-path ". Rerunning now...")
-  (println)
-  (println
-   "Returning: "
-   (-> file-path
-       slurp
-       transform-arrows
-       read-forms
-       eval-each-and-return-last
-       pr-str)))
+  (try
+    (println
+     "Returning: "
+     (-> file-path
+         slurp
+         read-forms
+         eval-with-arrow-handling
+         pr-str))
+    (catch Exception e
+      (println (str "Found an error in your notebook, try again.\n"
+                    (dissoc (Throwable->map e) :trace))))))
+
+(defn create-scratch! [file-path]
+  (if (.exists (io/file file-path))
+    (do(println "watching tiny notebook at" file-path))
+    (do(println "No notebook arg passed, creating scratch notebook at" file-path)
+       (spit "scratch.clj" "(def a \"hello world\")\n> a")))
+  file-path)
 
 (defn watch!
   "will wait and watch file-name, running handle! each time it is changed." 
   []
+  (let [notebook (create-scratch! (or (first *command-line-args*) "scratch.clj"))]
+    (println "notebook is at " notebook)
+    (handle! notebook)
+    (fw/watch
+     notebook
+     (fn [{:keys [path type] :as event}]
+       (when (= type :write) ;; sometimes emacs ':create's
+         (println " -- changes found in [" (last (str/split path #"/")) "] Rerunning now -- ")
+         (handle! path)))
+     {:delay-ms 50})
+    @(promise)))
 
-  (fw/watch
-   (first *command-line-args*)
-   (fn [{:keys [path type] :as event}]
-     (when (= type :write)
-       (handle! path)))
-   {:delay-ms 50})
-  @(promise))
-
-;;(handle! "examples/one.clj")
 (watch!)
